@@ -48,7 +48,8 @@ builtins.print = spool_print
 
 class Recon(framework.Framework):
 
-    repo_url = 'https://raw.githubusercontent.com/lanmaster53/recon-ng-modules/master/'
+    #repo_url = 'https://raw.githubusercontent.com/lanmaster53/recon-ng-modules/master/'
+    repo_url = 'https://raw.githubusercontent.com/ncurran/recon-og-marketplace/master/'
 
     def __init__(self, check=True, analytics=True, marketplace=True, accessible=False):
         framework.Framework.__init__(self, 'base')
@@ -106,7 +107,8 @@ class Recon(framework.Framework):
             pattern = r"'(\d+\.\d+\.\d+[^']*)'"
             remote = 0
             try:
-                remote = re.search(pattern, self.request('GET', 'https://raw.githubusercontent.com/lanmaster53/recon-ng/master/VERSION').text).group(1)
+                #remote = re.search(pattern, self.request('GET', 'https://raw.githubusercontent.com/lanmaster53/recon-ng/master/VERSION').text).group(1)
+                remote = re.search(pattern, self.request('GET', 'https://raw.githubusercontent.com/ncurran/recon-og/master/VERSION').text).group(1)
             except Exception as e:
                 self.error(f"Version check failed ({type(e).__name__}).")
                 #self.print_exception()

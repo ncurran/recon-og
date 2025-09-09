@@ -292,6 +292,7 @@ class Framework(cmd.Cmd):
 
     def debug(self, line):
         '''Formats and presents output if in debug mode (very verbose).'''
+        self._global_options['verbosity']
         if self._global_options['verbosity'] >= 2:
             self.output(line)
 
