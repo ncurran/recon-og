@@ -1,4 +1,4 @@
-__author__    = 'Tim Tomes (@lanmaster53)'
+__author__    = 'Nicholas Curran (@ncurran)'
 
 from datetime import datetime
 from pathlib import Path
@@ -90,7 +90,7 @@ class Recon(framework.Framework):
         self.register_option('proxy', None, False, 'proxy server (address:port)')
         self.register_option('threads', 10, True, 'number of threads (where applicable)')
         self.register_option('timeout', 10, True, 'socket timeout (seconds)')
-        self.register_option('user-agent', f"Recon-ng/v{__version__.split('.')[0]}", True, 'user-agent string')
+        self.register_option('user-agent', f"recon-og/v{__version__.split('.')[0]}", True, 'user-agent string')
         self.register_option('verbosity', 1, True, 'verbosity level (0 = minimal, 1 = verbose, 2 = debug)')
 
     def _init_home(self):
