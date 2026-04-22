@@ -1,4 +1,25 @@
-# The Recon-ng Framework
+# recon-og
+
+A maintained fork of the [Recon-ng Framework](https://github.com/lanmaster53/recon-ng) with updated modules and bug fixes.
+
+## Installation
+
+```bash
+git clone git@github.com:ncurran/recon-og.git
+cd recon-og
+pip install -r REQUIREMENTS
+
+# Make recon-og available system-wide
+sudo ln -sf "$(pwd)/recon-og" /usr/local/bin/recon-og
+```
+
+Then launch with:
+
+```bash
+recon-og
+```
+
+---
 
 [Recon-ng content now available on Pluralsight!](https://app.pluralsight.com/library/courses/technical-information-gathering-recon-ng)
 
