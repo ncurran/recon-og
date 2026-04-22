@@ -8,9 +8,7 @@ A maintained fork of the [Recon-ng Framework](https://github.com/lanmaster53/rec
 git clone git@github.com:ncurran/recon-og.git
 cd recon-og
 pip install -r REQUIREMENTS
-
-# Make recon-og available system-wide
-sudo ln -sf "$(pwd)/recon-og" /usr/local/bin/recon-og
+sudo bash install.sh
 ```
 
 Then launch with:
