@@ -1,6 +1,6 @@
 # recon-og
 
-A maintained fork of the [Recon-ng Framework](https://github.com/lanmaster53/recon-ng) with updated modules and bug fixes.
+Your Grandma's favorite recon tool, now featuring AI slop! A fork of the [Recon-ng Framework](https://github.com/lanmaster53/recon-ng) with updated modules and bug fixes; we stand on the shoulders of ~~giants~~ original gangsters.
 
 ## Installation
 
