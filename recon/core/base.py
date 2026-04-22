@@ -53,7 +53,7 @@ class Recon(framework.Framework):
 
     def __init__(self, check=True, analytics=True, marketplace=True, accessible=False):
         framework.Framework.__init__(self, 'base')
-        self._name = 'recon-ng'
+        self._name = 'recon-og'
         self._prompt_template = '{}[{}] > '
         self._base_prompt = self._prompt_template.format('', self._name)
         # set toggle flags
@@ -64,7 +64,7 @@ class Recon(framework.Framework):
         # set path variables
         self.app_path = framework.Framework.app_path = sys.path[0]
         self.core_path = framework.Framework.core_path = os.path.join(self.app_path, 'core')
-        self.home_path = framework.Framework.home_path = os.path.join(os.path.expanduser('~'), '.recon-ng')
+        self.home_path = framework.Framework.home_path = os.path.join(os.path.expanduser('~'), '.recon-og')
         self.mod_path = framework.Framework.mod_path = os.path.join(self.home_path, 'modules')
         self.data_path = framework.Framework.data_path = os.path.join(self.home_path, 'data')
         self.spaces_path = framework.Framework.spaces_path = os.path.join(self.home_path, 'workspaces')
