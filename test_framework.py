@@ -414,5 +414,170 @@ class TestFrameworkBoot(unittest.TestCase):
         self.assertIn('-r', proc.stdout)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 — provenance column (schema, migration, insert API, show filter)
+# See PROVENANCE_PLAN.md for the design.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestProvenanceSchema(unittest.TestCase):
+    """Phase 1: every entity table has a `provenance TEXT` column on a fresh
+    workspace, and existing pre-Phase-1 workspaces get the column added on
+    open (idempotent migration, non-destructive)."""
+
+    PROVENANCE_TABLES = (
+        'domains', 'companies', 'netblocks', 'locations', 'vulnerabilities',
+        'ports', 'hosts', 'contacts', 'credentials', 'leaks', 'pushpins',
+        'profiles', 'repositories',
+    )
+
+    def test_provenance_column_on_fresh_workspace(self):
+        with _IsolatedHome() as h:
+            h.run_rc('# init')
+            with sqlite3.connect(h.workspace_db('default')) as conn:
+                for table in self.PROVENANCE_TABLES:
+                    with self.subTest(table=table):
+                        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                        self.assertIn('provenance', cols, msg=f"{table} missing provenance column")
+
+    def test_user_version_bumped_to_11(self):
+        with _IsolatedHome() as h:
+            h.run_rc('# init')
+            with sqlite3.connect(h.workspace_db('default')) as conn:
+                version = conn.execute('PRAGMA user_version').fetchone()[0]
+            self.assertEqual(version, 11)
+
+    def test_migration_from_v10_adds_provenance_column(self):
+        """Open a workspace that's on schema v10 (no provenance) and verify
+        the migration adds the column without dropping any existing data."""
+        with _IsolatedHome() as h:
+            os.makedirs(os.path.join(h.tmp, '.recon-og', 'workspaces', 'legacy'))
+            db = h.workspace_db('legacy')
+            # Fabricate a v10 workspace: same schema as current minus provenance.
+            with sqlite3.connect(db) as conn:
+                conn.executescript('''
+                    CREATE TABLE domains (domain TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE companies (company TEXT, description TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE netblocks (netblock TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE locations (latitude TEXT, longitude TEXT, street_address TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE vulnerabilities (host TEXT, reference TEXT, example TEXT, publish_date TEXT, category TEXT, status TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE ports (ip_address TEXT, host TEXT, port TEXT, protocol TEXT, banner TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE hosts (host TEXT, ip_address TEXT, region TEXT, country TEXT, latitude TEXT, longitude TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE contacts (first_name TEXT, middle_name TEXT, last_name TEXT, email TEXT, title TEXT, region TEXT, country TEXT, phone TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE credentials (username TEXT, password TEXT, hash TEXT, type TEXT, leak TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE leaks (leak_id TEXT, description TEXT, source_refs TEXT, leak_type TEXT, title TEXT, import_date TEXT, leak_date TEXT, attackers TEXT, num_entries TEXT, score TEXT, num_domains_affected TEXT, attack_method TEXT, target_industries TEXT, password_hash TEXT, password_type TEXT, targets TEXT, media_refs TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE pushpins (source TEXT, screen_name TEXT, profile_name TEXT, profile_url TEXT, media_url TEXT, thumb_url TEXT, message TEXT, latitude TEXT, longitude TEXT, time TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE profiles (username TEXT, resource TEXT, url TEXT, category TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE repositories (name TEXT, owner TEXT, description TEXT, resource TEXT, category TEXT, url TEXT, notes TEXT, module TEXT);
+                    CREATE TABLE dashboard (module TEXT PRIMARY KEY, runs INT);
+                    PRAGMA user_version = 10;
+                    -- Pre-existing rows must survive the migration intact.
+                    INSERT INTO domains (domain, module) VALUES ('legacy.com', 'user_defined');
+                    INSERT INTO hosts (host, ip_address, module) VALUES ('mail.legacy.com', '10.0.0.1', 'brute_hosts');
+                ''')
+
+            # Trigger migration by opening the workspace.
+            r = h.run_rc('# trigger-migration', workspace='legacy')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+
+            with sqlite3.connect(db) as conn:
+                # Schema upgraded
+                ver = conn.execute('PRAGMA user_version').fetchone()[0]
+                self.assertEqual(ver, 11)
+                # Provenance column present on every entity table now
+                for table in self.PROVENANCE_TABLES:
+                    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    self.assertIn('provenance', cols, msg=f"{table} missing provenance after migration")
+                # Pre-existing rows intact, with NULL provenance (no chain known)
+                row = conn.execute(
+                    "SELECT domain, module, provenance FROM domains WHERE domain='legacy.com'"
+                ).fetchone()
+                self.assertEqual(row, ('legacy.com', 'user_defined', None))
+                row = conn.execute(
+                    "SELECT host, ip_address, module, provenance FROM hosts WHERE host='mail.legacy.com'"
+                ).fetchone()
+                self.assertEqual(row, ('mail.legacy.com', '10.0.0.1', 'brute_hosts', None))
+
+
+class TestProvenanceShowFilter(unittest.TestCase):
+    """Phase 1: `show <table>` excludes the provenance column by default;
+    `show <table> all` includes it."""
+
+    def test_default_show_does_not_include_provenance(self):
+        with _IsolatedHome() as h:
+            h.run_rc('db insert domains acme.com~')
+            r = h.run_rc('show domains')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            # Header line lists column names — assert provenance not there.
+            self.assertNotIn('provenance', r.stdout.lower())
+
+    def test_show_all_includes_provenance(self):
+        with _IsolatedHome() as h:
+            h.run_rc('db insert domains acme.com~')
+            r = h.run_rc('show domains all')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('provenance', r.stdout.lower())
+
+
+class TestProvenanceCommand(unittest.TestCase):
+    """Phase 1: `provenance <table> <key>` looks up the row and prints
+    its chain (or its module name if no chain is recorded)."""
+
+    def test_provenance_for_user_defined_row_prints_module_name(self):
+        """Without an opt-in module having written a chain yet, the
+        provenance lookup falls back to printing the module column."""
+        with _IsolatedHome() as h:
+            h.run_rc('db insert domains acme.com~')
+            r = h.run_rc('provenance domains acme.com')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('user_defined', r.stdout)
+
+    def test_provenance_no_match(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('provenance domains nonexistent.com')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn("No 'domains' row", r.stdout)
+
+    def test_provenance_unknown_table(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('provenance not_a_table some.value')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('No such table', r.stdout + r.stderr)
+
+
+class TestProvenanceInsertAPI(unittest.TestCase):
+    """Phase 1: framework's insert_*() methods accept a provenance kwarg
+    and write it to the new column. Verified by writing a tiny rc that
+    drops directly into the SQLite db with raw INSERT statements that
+    exercise the schema (the public-facing path is via modules opting in
+    in Phase 2)."""
+
+    def test_provenance_column_writable_via_raw_insert(self):
+        with _IsolatedHome() as h:
+            h.run_rc('# init')
+            with sqlite3.connect(h.workspace_db('default')) as conn:
+                conn.execute(
+                    "INSERT INTO hosts (host, ip_address, module, provenance) VALUES (?,?,?,?)",
+                    ('mail.acme.com', '10.0.0.1', 'permute', 'alienvault.brute_hosts.permute'),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT module, provenance FROM hosts WHERE host='mail.acme.com'"
+                ).fetchone()
+            self.assertEqual(row, ('permute', 'alienvault.brute_hosts.permute'))
+
+    def test_provenance_lookup_returns_chain(self):
+        with _IsolatedHome() as h:
+            h.run_rc('# init')
+            with sqlite3.connect(h.workspace_db('default')) as conn:
+                conn.execute(
+                    "INSERT INTO hosts (host, ip_address, module, provenance) VALUES (?,?,?,?)",
+                    ('mail.acme.com', '10.0.0.1', 'permute', 'alienvault.brute_hosts.permute'),
+                )
+                conn.commit()
+            r = h.run_rc('provenance hosts mail.acme.com')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('alienvault.brute_hosts.permute', r.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

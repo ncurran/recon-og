@@ -403,38 +403,41 @@ class Framework(cmd.Cmd):
             display(f"{key.title()}: {data[key]}")
         display(self.ruler*50)
 
-    def insert_domains(self, domain=None, notes=None, mute=False):
+    def insert_domains(self, domain=None, notes=None, mute=False, provenance=None):
         '''Adds a domain to the database and returns the affected row count.'''
         data = dict(
             domain = domain,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('domains', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_companies(self, company=None, description=None, notes=None, mute=False):
+    def insert_companies(self, company=None, description=None, notes=None, mute=False, provenance=None):
         '''Adds a company to the database and returns the affected row count.'''
         data = dict(
             company = company,
             description = description,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('companies', data.copy(), ('company',))
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_netblocks(self, netblock=None, notes=None, mute=False):
+    def insert_netblocks(self, netblock=None, notes=None, mute=False, provenance=None):
         '''Adds a netblock to the database and returns the affected row count.'''
         data = dict(
             netblock = netblock,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('netblocks', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_locations(self, latitude=None, longitude=None, street_address=None, notes=None, mute=False):
+    def insert_locations(self, latitude=None, longitude=None, street_address=None, notes=None, mute=False, provenance=None):
         '''Adds a location to the database and returns the affected row count.'''
         data = dict(
             latitude = latitude,
@@ -442,11 +445,12 @@ class Framework(cmd.Cmd):
             street_address = street_address,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('locations', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_vulnerabilities(self, host=None, reference=None, example=None, publish_date=None, category=None, status=None, notes=None, mute=False):
+    def insert_vulnerabilities(self, host=None, reference=None, example=None, publish_date=None, category=None, status=None, notes=None, mute=False, provenance=None):
         '''Adds a vulnerability to the database and returns the affected row count.'''
         data = dict(
             host = host,
@@ -457,11 +461,12 @@ class Framework(cmd.Cmd):
             status = status,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('vulnerabilities', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_ports(self, ip_address=None, host=None, port=None, protocol=None, banner=None, notes=None, mute=False):
+    def insert_ports(self, ip_address=None, host=None, port=None, protocol=None, banner=None, notes=None, mute=False, provenance=None):
         '''Adds a port to the database and returns the affected row count.'''
         data = dict(
             ip_address = ip_address,
@@ -471,11 +476,12 @@ class Framework(cmd.Cmd):
             banner = banner,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('ports', data.copy(), ('ip_address', 'port', 'host'))
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_hosts(self, host=None, ip_address=None, region=None, country=None, latitude=None, longitude=None, notes=None, mute=False):
+    def insert_hosts(self, host=None, ip_address=None, region=None, country=None, latitude=None, longitude=None, notes=None, mute=False, provenance=None):
         '''Adds a host to the database and returns the affected row count.'''
         data = dict(
             host = host,
@@ -486,11 +492,12 @@ class Framework(cmd.Cmd):
             longitude = longitude,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('hosts', data.copy(), ('host', 'ip_address'))
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_contacts(self, first_name=None, middle_name=None, last_name=None, email=None, title=None, region=None, country=None, phone=None, notes=None, mute=False):
+    def insert_contacts(self, first_name=None, middle_name=None, last_name=None, email=None, title=None, region=None, country=None, phone=None, notes=None, mute=False, provenance=None):
         '''Adds a contact to the database and returns the affected row count.'''
         data = dict(
             first_name = first_name,
@@ -503,11 +510,12 @@ class Framework(cmd.Cmd):
             phone = phone,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('contacts', data.copy(), ('first_name', 'middle_name', 'last_name', 'title', 'email', 'phone'))
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_credentials(self, username=None, password=None, _hash=None, _type=None, leak=None, notes=None, mute=False):
+    def insert_credentials(self, username=None, password=None, _hash=None, _type=None, leak=None, notes=None, mute=False, provenance=None):
         '''Adds a credential to the database and returns the affected row count.'''
 
         # account for hashes provided in the password field
@@ -531,11 +539,12 @@ class Framework(cmd.Cmd):
             leak = leak,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('credentials', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_leaks(self, leak_id=None, description=None, source_refs=None, leak_type=None, title=None, import_date=None, leak_date=None, attackers=None, num_entries=None, score=None, num_domains_affected=None, attack_method=None, target_industries=None, password_hash=None, password_type=None, targets=None, media_refs=None, notes=None, mute=False):
+    def insert_leaks(self, leak_id=None, description=None, source_refs=None, leak_type=None, title=None, import_date=None, leak_date=None, attackers=None, num_entries=None, score=None, num_domains_affected=None, attack_method=None, target_industries=None, password_hash=None, password_type=None, targets=None, media_refs=None, notes=None, mute=False, provenance=None):
         '''Adds a leak to the database and returns the affected row count.'''
         data = dict(
             leak_id = leak_id,
@@ -557,11 +566,12 @@ class Framework(cmd.Cmd):
             media_refs = media_refs,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('leaks', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_pushpins(self, source=None, screen_name=None, profile_name=None, profile_url=None, media_url=None, thumb_url=None, message=None, latitude=None, longitude=None, time=None, notes=None, mute=False):
+    def insert_pushpins(self, source=None, screen_name=None, profile_name=None, profile_url=None, media_url=None, thumb_url=None, message=None, latitude=None, longitude=None, time=None, notes=None, mute=False, provenance=None):
         '''Adds a pushpin to the database and returns the affected row count.'''
         data = dict(
             source = source,
@@ -576,11 +586,12 @@ class Framework(cmd.Cmd):
             time = time.strftime(self.time_format),
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('pushpins', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_profiles(self, username=None, resource=None, url=None, category=None, notes=None, mute=False):
+    def insert_profiles(self, username=None, resource=None, url=None, category=None, notes=None, mute=False, provenance=None):
         '''Adds a profile to the database and returns the affected row count.'''
         data = dict(
             username = username,
@@ -589,11 +600,12 @@ class Framework(cmd.Cmd):
             category = category,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('profiles', data.copy(), ('username', 'url'))
         if not mute: self._display(data, rowcount)
         return rowcount
 
-    def insert_repositories(self, name=None, owner=None, description=None, resource=None, category=None, url=None, notes=None, mute=False):
+    def insert_repositories(self, name=None, owner=None, description=None, resource=None, category=None, url=None, notes=None, mute=False, provenance=None):
         '''Adds a repository to the database and returns the affected row count.'''
         data = dict(
             name = name,
@@ -604,6 +616,7 @@ class Framework(cmd.Cmd):
             url = url,
             notes = notes
         )
+        data['provenance'] = provenance
         rowcount = self.insert('repositories', data.copy(), data.keys())
         if not mute: self._display(data, rowcount)
         return rowcount
@@ -1007,10 +1020,21 @@ class Framework(cmd.Cmd):
             self.help_show()
             return
         arg, params = self._parse_params(params)
+        # `show <table> all` opts in to wide columns (provenance etc.).
+        # Default `show <table>` filters out the provenance column at the
+        # SELECT layer because the chain string can grow long and pushes
+        # other columns off-screen on narrow terminals. Operators who want
+        # to see provenance use `provenance <table> <key>` for a focused
+        # view, or run a SQL query directly.
+        show_all = bool(params and params.strip().lower() == 'all')
         if arg in self._get_show_names():
             getattr(self, 'show_' + arg)()
         elif arg in self.get_tables():
-            self.do_db(f"query SELECT ROWID, * FROM `{arg}`")
+            cols = [c[0] for c in self.get_columns(arg)]
+            if not show_all:
+                cols = [c for c in cols if c != 'provenance']
+            col_list = ', '.join(['ROWID'] + [f'`{c}`' for c in cols])
+            self.do_db(f"query SELECT {col_list} FROM `{arg}`")
         else:
             self.help_show()
 
@@ -1069,7 +1093,10 @@ class Framework(cmd.Cmd):
             if not hasattr(self, 'insert_' + table):
                 self.error('Cannot add records to dynamically created tables.')
                 return
-            columns = [x for x in self.get_columns(table) if x[0] != 'module']
+            # Exclude framework-managed columns (module is auto-set by the
+            # caller's stack; provenance is set only by modules that opt
+            # into chain tracking — neither should be hand-typed).
+            columns = [x for x in self.get_columns(table) if x[0] not in ('module', 'provenance')]
             # sanitize column names to avoid conflicts with builtins in insert_* method
             sanitize_column = lambda x: '_'+x if x in ['hash', 'type'] else x
             record = {}
@@ -1286,6 +1313,42 @@ class Framework(cmd.Cmd):
         else:
             self.output('This workspace has no record of activity.')
 
+    def do_provenance(self, params):
+        '''Shows the provenance chain for a row, e.g. "provenance hosts mail.acme.com".
+        The chain is the dotted module sequence that produced the row when
+        the modules involved opted into provenance tracking.'''
+        if not params:
+            self.help_provenance()
+            return
+        table, params = self._parse_params(params)
+        key = (params or '').strip()
+        if not table or not key:
+            self.help_provenance()
+            return
+        if table not in self.get_tables():
+            self.error(f"No such table: {table}")
+            return
+        # Pick the natural-key column for each table — first non-meta column.
+        natural_key = {
+            'hosts': 'host', 'domains': 'domain', 'companies': 'company',
+            'netblocks': 'netblock', 'ports': 'host', 'contacts': 'email',
+            'credentials': 'hash', 'vulnerabilities': 'host',
+            'profiles': 'username', 'repositories': 'name',
+        }.get(table)
+        if not natural_key:
+            self.error(f"Provenance lookup not supported for table '{table}'.")
+            return
+        rows = self.query(
+            f"SELECT module, provenance FROM `{table}` WHERE `{natural_key}`=?",
+            (key,),
+        )
+        if not rows:
+            self.output(f"No '{table}' row matching {natural_key}={key!r}.")
+            return
+        for module, provenance in rows:
+            chain = provenance or module or '(unknown)'
+            self.output(f"  {chain}")
+
     def do_pdb(self, params):
         '''Starts a Python Debugger session (dev only)'''
         import pdb
@@ -1334,7 +1397,11 @@ class Framework(cmd.Cmd):
     def help_show(self):
         options = sorted(self._get_show_names() + self.get_tables())
         print(getattr(self, 'do_show').__doc__)
-        print(f"{os.linesep}Usage: show <{'|'.join(options)}>{os.linesep}")
+        print(f"{os.linesep}Usage: show <{'|'.join(options)}> [all]{os.linesep}")
+
+    def help_provenance(self):
+        print(getattr(self, 'do_provenance').__doc__)
+        print(f"{os.linesep}Usage: provenance <table> <natural_key>{os.linesep}")
 
     def help_db(self):
         print(getattr(self, 'do_db').__doc__)
