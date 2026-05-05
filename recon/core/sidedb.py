@@ -27,6 +27,7 @@ import sqlite3
 
 DEFAULT_ENDPOINTS_DB_PATH = '~/bug_bounty/tools/recon/endpoints.db'
 DEFAULT_APPS_DB_PATH = '~/bug_bounty/tools/recon/apps.db'
+DEFAULT_INSCOPE_HOSTS_DB_PATH = '~/bug_bounty/tools/shodan/inscope_hosts.db'
 
 
 ENDPOINTS_SCHEMA = (
@@ -122,14 +123,20 @@ def open_apps_db(path=None):
 
 
 def attach_sidedbs(conn, endpoints_path=None, apps_path=None,
-                   endpoints_alias='endpoints_db', apps_alias='apps_db'):
-    '''ATTACH the endpoints + apps side-DBs to an existing sqlite3
-    connection (typically a workspace ``data.db``) so a single SQL
-    statement can join across schemas.
+                   inscope_hosts_path=None,
+                   endpoints_alias='endpoints_db', apps_alias='apps_db',
+                   inscope_hosts_alias='inscope_db'):
+    '''ATTACH the endpoints + apps side-DBs (and the Shodan inscope_hosts
+    side-DB if present) to an existing sqlite3 connection (typically a
+    workspace ``data.db``) so a single SQL statement can join across
+    schemas.
 
-    Both side-DB files are lazy-created and schema-bootstrapped before
-    attach if they don't exist yet — out-of-tree tools don't need a
-    separate init step.
+    The endpoints and apps DBs are owned by recon-og — files are lazy-
+    created and schema-bootstrapped before attach. The inscope_hosts DB
+    is owned by separate Shodan tooling under ~/bug_bounty/tools/shodan;
+    we attach read-only when present and silently skip when absent.
+
+    Returns a list of aliases that were actually attached.
 
     Example:
         conn = sqlite3.connect(workspace_db)
@@ -143,11 +150,24 @@ def attach_sidedbs(conn, endpoints_path=None, apps_path=None,
     '''
     ep_path = _resolve(endpoints_path or DEFAULT_ENDPOINTS_DB_PATH)
     ap_path = _resolve(apps_path or DEFAULT_APPS_DB_PATH)
+    in_path = _resolve(inscope_hosts_path or DEFAULT_INSCOPE_HOSTS_DB_PATH)
+
     open_endpoints_db(ep_path).close()
     open_apps_db(ap_path).close()
     # ATTACH does not bind via parameters; quote the path defensively.
     conn.execute(f"ATTACH DATABASE '{_quote(ep_path)}' AS {_ident(endpoints_alias)}")
     conn.execute(f"ATTACH DATABASE '{_quote(ap_path)}' AS {_ident(apps_alias)}")
+    attached = [endpoints_alias, apps_alias]
+
+    # inscope_hosts.db is foreign-owned. Don't create it; just attach if
+    # the operator already has Shodan tooling populating it.
+    if os.path.exists(in_path):
+        conn.execute(
+            f"ATTACH DATABASE '{_quote(in_path)}' AS {_ident(inscope_hosts_alias)}"
+        )
+        attached.append(inscope_hosts_alias)
+
+    return attached
 
 
 # ── internal ─────────────────────────────────────────────────────────────────

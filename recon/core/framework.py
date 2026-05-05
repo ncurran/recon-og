@@ -419,17 +419,29 @@ class Framework(cmd.Cmd):
         file + schema on first call. Caller closes.'''
         return sidedb.open_apps_db(self.apps_db_path())
 
+    def inscope_hosts_db_path(self):
+        return os.path.expanduser(self._global_options['inscope_hosts_db_path'])
+
     def attach_sidedbs(self, conn):
-        '''ATTACH the endpoints + apps side-DBs to a given sqlite3
-        connection (typically a workspace data.db). After this call, the
-        connection can JOIN across schemas:
+        '''ATTACH endpoints + apps + inscope_hosts side-DBs to a given
+        sqlite3 connection (typically a workspace data.db). After this
+        call, the connection can JOIN across schemas:
             SELECT * FROM main.hosts h
             JOIN endpoints_db.endpoints e ON e.fqdn = h.host
+            LEFT JOIN inscope_db.scope_hosts s ON s.fqdn = h.host
+
+        Returns the list of attached aliases. inscope_db is included only
+        when the underlying file exists (foreign-owned by Shodan tooling).
 
         Out-of-tree scripts use ``recon.core.sidedb.attach_sidedbs()``
         directly with their own connection — this method is the in-process
         equivalent for module code.'''
-        sidedb.attach_sidedbs(conn, self.endpoints_db_path(), self.apps_db_path())
+        return sidedb.attach_sidedbs(
+            conn,
+            endpoints_path=self.endpoints_db_path(),
+            apps_path=self.apps_db_path(),
+            inscope_hosts_path=self.inscope_hosts_db_path(),
+        )
 
     #==================================================
     # INSERT METHODS

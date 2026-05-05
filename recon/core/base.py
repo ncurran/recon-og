@@ -104,6 +104,10 @@ class Recon(framework.Framework):
                              '~/bug_bounty/tools/recon/apps.db', False,
                              'path to the apps side-database '
                              '(software fingerprints + facts)')
+        self.register_option('inscope_hosts_db_path',
+                             '~/bug_bounty/tools/shodan/inscope_hosts.db', False,
+                             'path to the Shodan inscope_hosts side-database '
+                             '(read-only, foreign-owned — attached when present)')
 
     def _init_home(self):
         # initialize home folder

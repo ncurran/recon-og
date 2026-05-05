@@ -805,6 +805,70 @@ class TestSideDatabases(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_attach_sidedbs_attaches_inscope_hosts_when_present(self):
+        # When ~/bug_bounty/tools/shodan/inscope_hosts.db exists, attach_sidedbs
+        # should ALSO attach it under inscope_db. Foreign-owned schema —
+        # we just need the alias resolvable.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import sidedb
+        finally:
+            sys.path.pop(0)
+        with _IsolatedHome() as h:
+            in_path = os.path.join(h.tmp, 'inscope_hosts.db')
+            ic = sqlite3.connect(in_path)
+            ic.execute('CREATE TABLE scope_hosts (fqdn TEXT)')
+            ic.execute("INSERT INTO scope_hosts VALUES ('api.example.com')")
+            ic.commit()
+            ic.close()
+
+            conn = sqlite3.connect(':memory:')
+            try:
+                attached = sidedb.attach_sidedbs(
+                    conn,
+                    endpoints_path=self._ep_db_path(h),
+                    apps_path=self._apps_db_path(h),
+                    inscope_hosts_path=in_path,
+                )
+                self.assertIn('inscope_db', attached)
+                rows = conn.execute(
+                    'SELECT fqdn FROM inscope_db.scope_hosts'
+                ).fetchall()
+                self.assertEqual(rows, [('api.example.com',)])
+            finally:
+                conn.close()
+
+    def test_attach_sidedbs_skips_inscope_hosts_when_missing(self):
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import sidedb
+        finally:
+            sys.path.pop(0)
+        with _IsolatedHome() as h:
+            in_path = os.path.join(h.tmp, 'never_created.db')
+            self.assertFalse(os.path.exists(in_path))
+            conn = sqlite3.connect(':memory:')
+            try:
+                attached = sidedb.attach_sidedbs(
+                    conn,
+                    endpoints_path=self._ep_db_path(h),
+                    apps_path=self._apps_db_path(h),
+                    inscope_hosts_path=in_path,
+                )
+                self.assertNotIn('inscope_db', attached)
+                self.assertIn('endpoints_db', attached)
+                self.assertIn('apps_db', attached)
+                # Foreign DB file must NOT have been created.
+                self.assertFalse(os.path.exists(in_path))
+            finally:
+                conn.close()
+
+    def test_inscope_hosts_db_path_option_registered(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('INSCOPE_HOSTS_DB_PATH', r.stdout)
+
     def test_attach_sidedbs_creates_missing_files(self):
         # If the side-DB files don't exist yet, attach_sidedbs must create
         # them with the correct schema before attaching — out-of-tree tools
