@@ -14,6 +14,8 @@ import subprocess
 import sys
 import traceback
 
+from . import sidedb
+
 #=================================================
 # SUPPORT CLASSES
 #=================================================
@@ -396,88 +398,10 @@ class Framework(cmd.Cmd):
     #==================================================
     # SIDE-DATABASE METHODS (endpoints + apps)
     #==================================================
-    # Side-databases live outside the workspace tree so multiple workspaces
-    # share one corpus of endpoints / apps. The schema is created on first
-    # connect (CREATE TABLE IF NOT EXISTS) so collectors don't need a
-    # separate bootstrap step.
-
-    _ENDPOINTS_SCHEMA = (
-        '''CREATE TABLE IF NOT EXISTS endpoints (
-            id                INTEGER PRIMARY KEY,
-            fqdn              TEXT NOT NULL,
-            apex              TEXT NOT NULL,
-            method            TEXT NOT NULL,
-            path_template     TEXT NOT NULL,
-            operation_id      TEXT,
-            discovered_at     TEXT NOT NULL,
-            last_verified_at  TEXT,
-            confidence        TEXT NOT NULL,
-            app_id            INTEGER,
-            UNIQUE (fqdn, method, path_template)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_endpoints_apex ON endpoints(apex)',
-        'CREATE INDEX IF NOT EXISTS idx_endpoints_apex_method ON endpoints(apex, method)',
-        '''CREATE TABLE IF NOT EXISTS endpoint_observations (
-            id                  INTEGER PRIMARY KEY,
-            endpoint_id         INTEGER NOT NULL REFERENCES endpoints(id),
-            source              TEXT NOT NULL,
-            source_ref          TEXT,
-            observed_at         TEXT NOT NULL,
-            raw_url             TEXT,
-            http_status         INTEGER,
-            content_type        TEXT,
-            response_body_hash  TEXT,
-            evidence_blob       TEXT,
-            UNIQUE (endpoint_id, source, source_ref)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_obs_endpoint ON endpoint_observations(endpoint_id)',
-        'CREATE INDEX IF NOT EXISTS idx_obs_source ON endpoint_observations(source)',
-        '''CREATE TABLE IF NOT EXISTS endpoint_params (
-            id            INTEGER PRIMARY KEY,
-            endpoint_id   INTEGER NOT NULL REFERENCES endpoints(id),
-            location      TEXT NOT NULL,
-            name          TEXT NOT NULL,
-            type_hint     TEXT,
-            sample_values TEXT,
-            required      INTEGER,
-            source        TEXT NOT NULL,
-            UNIQUE (endpoint_id, location, name, source)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_params_endpoint ON endpoint_params(endpoint_id)',
-        '''CREATE TABLE IF NOT EXISTS endpoint_tags (
-            endpoint_id INTEGER NOT NULL REFERENCES endpoints(id),
-            tag         TEXT NOT NULL,
-            source      TEXT,
-            PRIMARY KEY (endpoint_id, tag)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_tags_tag ON endpoint_tags(tag)',
-    )
-
-    _APPS_SCHEMA = (
-        '''CREATE TABLE IF NOT EXISTS apps (
-            id                INTEGER PRIMARY KEY,
-            fqdn              TEXT NOT NULL,
-            apex              TEXT NOT NULL,
-            path_prefix       TEXT NOT NULL DEFAULT '/',
-            app_class         TEXT NOT NULL,
-            confidence        TEXT NOT NULL,
-            discovered_at     TEXT NOT NULL,
-            last_verified_at  TEXT NOT NULL,
-            UNIQUE (fqdn, path_prefix, app_class)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_apps_apex ON apps(apex)',
-        'CREATE INDEX IF NOT EXISTS idx_apps_class ON apps(app_class)',
-        '''CREATE TABLE IF NOT EXISTS app_facts (
-            app_id      INTEGER NOT NULL REFERENCES apps(id),
-            fact_class  TEXT NOT NULL,
-            fact_key    TEXT NOT NULL,
-            fact_value  TEXT,
-            source      TEXT NOT NULL,
-            observed_at TEXT NOT NULL,
-            PRIMARY KEY (app_id, fact_class, fact_key)
-        )''',
-        'CREATE INDEX IF NOT EXISTS idx_facts_class_value ON app_facts(fact_class, fact_value)',
-    )
+    # The side-DB schema + low-level open helpers live in recon.core.sidedb
+    # so out-of-tree tools (engagement-specific scripts that don't run
+    # inside recon-og's module loader) can import the same primitives.
+    # Framework provides path resolution + thin wrappers.
 
     def endpoints_db_path(self):
         return os.path.expanduser(self._global_options['endpoints_db_path'])
@@ -488,24 +412,24 @@ class Framework(cmd.Cmd):
     def endpoints_conn(self):
         '''Return a sqlite3.Connection to the endpoints side-DB, creating
         the file + schema on first call. Caller closes.'''
-        return self._open_side_db(self.endpoints_db_path(), Framework._ENDPOINTS_SCHEMA)
+        return sidedb.open_endpoints_db(self.endpoints_db_path())
 
     def apps_conn(self):
         '''Return a sqlite3.Connection to the apps side-DB, creating the
         file + schema on first call. Caller closes.'''
-        return self._open_side_db(self.apps_db_path(), Framework._APPS_SCHEMA)
+        return sidedb.open_apps_db(self.apps_db_path())
 
-    def _open_side_db(self, path, schema):
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        conn = sqlite3.connect(path)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.execute('PRAGMA journal_mode = WAL')
-        for stmt in schema:
-            conn.execute(stmt)
-        conn.commit()
-        return conn
+    def attach_sidedbs(self, conn):
+        '''ATTACH the endpoints + apps side-DBs to a given sqlite3
+        connection (typically a workspace data.db). After this call, the
+        connection can JOIN across schemas:
+            SELECT * FROM main.hosts h
+            JOIN endpoints_db.endpoints e ON e.fqdn = h.host
+
+        Out-of-tree scripts use ``recon.core.sidedb.attach_sidedbs()``
+        directly with their own connection — this method is the in-process
+        equivalent for module code.'''
+        sidedb.attach_sidedbs(conn, self.endpoints_db_path(), self.apps_db_path())
 
     #==================================================
     # INSERT METHODS

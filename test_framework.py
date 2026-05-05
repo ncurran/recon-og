@@ -611,13 +611,13 @@ class TestSideDatabases(unittest.TestCase):
         # so the test stays in sync with whatever shape the framework creates.
         sys.path.insert(0, _REPO)
         try:
-            from recon.core.framework import Framework
+            from recon.core import sidedb
         finally:
             sys.path.pop(0)
         os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
         conn = sqlite3.connect(db_path)
         try:
-            for stmt in Framework._ENDPOINTS_SCHEMA:
+            for stmt in sidedb.ENDPOINTS_SCHEMA:
                 conn.execute(stmt)
             conn.execute(
                 "INSERT INTO endpoints (fqdn, apex, method, path_template, "
@@ -634,13 +634,13 @@ class TestSideDatabases(unittest.TestCase):
                   app_class='wordpress'):
         sys.path.insert(0, _REPO)
         try:
-            from recon.core.framework import Framework
+            from recon.core import sidedb
         finally:
             sys.path.pop(0)
         os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
         conn = sqlite3.connect(db_path)
         try:
-            for stmt in Framework._APPS_SCHEMA:
+            for stmt in sidedb.APPS_SCHEMA:
                 conn.execute(stmt)
             conn.execute(
                 "INSERT INTO apps (fqdn, apex, path_prefix, app_class, "
@@ -742,18 +742,114 @@ class TestSideDatabases(unittest.TestCase):
 
     # ── schema correctness check ─────────────────────────────────────────────
 
+    def test_sidedb_module_importable_for_out_of_tree_tools(self):
+        # The walker / post-auth scripts at ~/bug_bounty/tools/azure/* are
+        # not modules — they instantiate sqlite3 directly. They must be able
+        # to import the schema + open helpers without touching Framework.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import sidedb
+        finally:
+            sys.path.pop(0)
+        # Public surface required by out-of-tree consumers.
+        for name in (
+            'open_endpoints_db', 'open_apps_db', 'attach_sidedbs',
+            'ENDPOINTS_SCHEMA', 'APPS_SCHEMA',
+            'DEFAULT_ENDPOINTS_DB_PATH', 'DEFAULT_APPS_DB_PATH',
+        ):
+            self.assertTrue(hasattr(sidedb, name),
+                            f'recon.core.sidedb missing public name: {name}')
+
+    def test_attach_sidedbs_enables_cross_schema_join(self):
+        # Simulate the AAD walker's intended usage: open the workspace DB,
+        # ATTACH the side-DBs, JOIN across schemas in one query.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import sidedb
+        finally:
+            sys.path.pop(0)
+
+        with _IsolatedHome() as h:
+            # Spin up a workspace + seed a host so main.hosts has a row.
+            r = h.run_rc('db insert hosts api.example.com~~~~~~')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            workspace_db = h.workspace_db('default')
+
+            # Seed the side-DBs at the same paths the framework would use.
+            ep_path = self._ep_db_path(h)
+            ap_path = self._apps_db_path(h)
+            self._seed_endpoint(ep_path,
+                                fqdn='api.example.com', apex='example.com',
+                                path='/v1/users')
+            self._seed_app(ap_path,
+                           fqdn='api.example.com', apex='example.com',
+                           app_class='aad_app')
+
+            # Out-of-tree usage path — no Framework instance, just sqlite3
+            # + the public sidedb module.
+            conn = sqlite3.connect(workspace_db)
+            try:
+                sidedb.attach_sidedbs(conn, endpoints_path=ep_path, apps_path=ap_path)
+                # JOIN across main.hosts and endpoints_db.endpoints.
+                rows = conn.execute("""
+                    SELECT h.host, e.method, e.path_template
+                    FROM main.hosts h
+                    JOIN endpoints_db.endpoints e ON e.fqdn = h.host
+                """).fetchall()
+                self.assertIn(('api.example.com', 'GET', '/v1/users'), rows)
+                # Apps schema attached too.
+                rows = conn.execute(
+                    "SELECT fqdn, app_class FROM apps_db.apps"
+                ).fetchall()
+                self.assertIn(('api.example.com', 'aad_app'), rows)
+            finally:
+                conn.close()
+
+    def test_attach_sidedbs_creates_missing_files(self):
+        # If the side-DB files don't exist yet, attach_sidedbs must create
+        # them with the correct schema before attaching — out-of-tree tools
+        # won't always have run a collector first.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import sidedb
+        finally:
+            sys.path.pop(0)
+        with _IsolatedHome() as h:
+            ep_path = os.path.join(h.tmp, 'fresh_endpoints.db')
+            ap_path = os.path.join(h.tmp, 'fresh_apps.db')
+            self.assertFalse(os.path.exists(ep_path))
+            self.assertFalse(os.path.exists(ap_path))
+
+            # Throwaway in-memory main DB just to give attach_sidedbs a target.
+            conn = sqlite3.connect(':memory:')
+            try:
+                sidedb.attach_sidedbs(conn, endpoints_path=ep_path, apps_path=ap_path)
+                # Files now exist with schema in place.
+                self.assertTrue(os.path.exists(ep_path))
+                self.assertTrue(os.path.exists(ap_path))
+                # Tables resolvable through the attached aliases.
+                rows = conn.execute(
+                    "SELECT name FROM endpoints_db.sqlite_master WHERE type='table'"
+                ).fetchall()
+                names = {r[0] for r in rows}
+                for required in ('endpoints', 'endpoint_observations',
+                                 'endpoint_params', 'endpoint_tags'):
+                    self.assertIn(required, names)
+            finally:
+                conn.close()
+
     def test_schema_has_expected_tables(self):
         # Lift the schema directly from the framework module and confirm that
         # all four endpoint tables (and the two apps tables) come up in a
         # fresh DB created via the helpers.
         sys.path.insert(0, _REPO)
         try:
-            from recon.core.framework import Framework
+            from recon.core import sidedb
         finally:
             sys.path.pop(0)
         # Confirm the schema constant lists every table the marketplace
         # collectors and enrichers depend on.
-        ddl_blob = '\n'.join(Framework._ENDPOINTS_SCHEMA + Framework._APPS_SCHEMA)
+        ddl_blob = '\n'.join(sidedb.ENDPOINTS_SCHEMA + sidedb.APPS_SCHEMA)
         for table in (
             'endpoints', 'endpoint_observations',
             'endpoint_params', 'endpoint_tags',
