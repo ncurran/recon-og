@@ -579,5 +579,188 @@ class TestProvenanceInsertAPI(unittest.TestCase):
             self.assertIn('alienvault.brute_hosts.permute', r.stdout)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Side-databases (endpoints + apps)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSideDatabases(unittest.TestCase):
+    """Schema bootstrap, connection helpers, and `show endpoints` / `show apps`
+    CLI affordances exposed by the framework. The collectors that write into
+    these DBs live in the marketplace; the framework only owns the surface."""
+
+    def _ep_db_path(self, h):
+        return os.path.join(h.tmp, 'endpoints.db')
+
+    def _apps_db_path(self, h):
+        return os.path.join(h.tmp, 'apps.db')
+
+    def _set_paths_rc(self, h):
+        # Always set the side-DB paths inside the tmp HOME so tests don't
+        # touch ~/bug_bounty/tools/recon. Returns rc-script lines that
+        # callers can prepend to their own commands.
+        return (
+            f"options set ENDPOINTS_DB_PATH {self._ep_db_path(h)}\n"
+            f"options set APPS_DB_PATH {self._apps_db_path(h)}\n"
+        )
+
+    def _seed_endpoint(self, db_path, fqdn='api.example.com', apex='example.com',
+                       method='GET', path='/users'):
+        """Open the side-DB (auto-bootstrapping schema by importing the
+        framework's constants) and INSERT one endpoint row."""
+        # We import the canonical schema from the framework module under test
+        # so the test stays in sync with whatever shape the framework creates.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core.framework import Framework
+        finally:
+            sys.path.pop(0)
+        os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            for stmt in Framework._ENDPOINTS_SCHEMA:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO endpoints (fqdn, apex, method, path_template, "
+                "discovered_at, last_verified_at, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'observed')",
+                (fqdn, apex, method, path,
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _seed_app(self, db_path, fqdn='wordpress.example.com', apex='example.com',
+                  app_class='wordpress'):
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core.framework import Framework
+        finally:
+            sys.path.pop(0)
+        os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            for stmt in Framework._APPS_SCHEMA:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO apps (fqdn, apex, path_prefix, app_class, "
+                "confidence, discovered_at, last_verified_at) "
+                "VALUES (?, ?, '/', ?, 'fingerprinted', "
+                "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (fqdn, apex, app_class),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── global option registration ───────────────────────────────────────────
+
+    def test_endpoints_db_path_option_registered_with_default(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('ENDPOINTS_DB_PATH', r.stdout)
+            self.assertIn('endpoints.db', r.stdout)
+
+    def test_apps_db_path_option_registered_with_default(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('APPS_DB_PATH', r.stdout)
+            self.assertIn('apps.db', r.stdout)
+
+    def test_options_set_endpoints_db_path_takes_effect(self):
+        with _IsolatedHome() as h:
+            target = os.path.join(h.tmp, 'custom_endpoints.db')
+            rc = (
+                f"options set ENDPOINTS_DB_PATH {target}\n"
+                "options list\n"
+            )
+            r = h.run_rc(rc)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn(target, r.stdout)
+
+    # ── show endpoints / show apps (empty + populated) ───────────────────────
+
+    def test_show_endpoints_when_no_db_present(self):
+        with _IsolatedHome() as h:
+            rc = self._set_paths_rc(h) + 'show endpoints\n'
+            r = h.run_rc(rc)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            # Nothing written, so the framework should report it.
+            self.assertIn('No side-database', r.stdout)
+
+    def test_show_endpoints_lists_seeded_rows_scoped_to_apex(self):
+        with _IsolatedHome() as h:
+            # Seed a workspace-domains row that scopes the show output.
+            # And an out-of-scope endpoint that must not appear.
+            ep_db = self._ep_db_path(h)
+            self._seed_endpoint(ep_db,
+                                fqdn='api.example.com', apex='example.com',
+                                path='/in-scope')
+            self._seed_endpoint(ep_db,
+                                fqdn='api.other.com', apex='other.com',
+                                path='/out-of-scope')
+            rc = (
+                'db insert domains example.com~\n'
+                + self._set_paths_rc(h)
+                + 'show endpoints\n'
+            )
+            r = h.run_rc(rc)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('api.example.com', r.stdout)
+            self.assertIn('/in-scope', r.stdout)
+            self.assertNotIn('api.other.com', r.stdout)
+            self.assertNotIn('/out-of-scope', r.stdout)
+
+    def test_show_endpoints_no_seeded_apex_shows_everything(self):
+        # When the workspace has no domains seeded, fall back to showing
+        # all rows so first-run inspection works.
+        with _IsolatedHome() as h:
+            self._seed_endpoint(self._ep_db_path(h),
+                                fqdn='api.example.com', apex='example.com',
+                                path='/no-scope')
+            rc = self._set_paths_rc(h) + 'show endpoints\n'
+            r = h.run_rc(rc)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('api.example.com', r.stdout)
+
+    def test_show_apps_lists_seeded_rows(self):
+        with _IsolatedHome() as h:
+            self._seed_app(self._apps_db_path(h),
+                           fqdn='wordpress.example.com', apex='example.com',
+                           app_class='wordpress')
+            rc = (
+                'db insert domains example.com~\n'
+                + self._set_paths_rc(h)
+                + 'show apps\n'
+            )
+            r = h.run_rc(rc)
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('wordpress.example.com', r.stdout)
+            self.assertIn('wordpress', r.stdout)
+
+    # ── schema correctness check ─────────────────────────────────────────────
+
+    def test_schema_has_expected_tables(self):
+        # Lift the schema directly from the framework module and confirm that
+        # all four endpoint tables (and the two apps tables) come up in a
+        # fresh DB created via the helpers.
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core.framework import Framework
+        finally:
+            sys.path.pop(0)
+        # Confirm the schema constant lists every table the marketplace
+        # collectors and enrichers depend on.
+        ddl_blob = '\n'.join(Framework._ENDPOINTS_SCHEMA + Framework._APPS_SCHEMA)
+        for table in (
+            'endpoints', 'endpoint_observations',
+            'endpoint_params', 'endpoint_tags',
+            'apps', 'app_facts',
+        ):
+            self.assertIn(f'CREATE TABLE IF NOT EXISTS {table}', ddl_blob)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -394,6 +394,120 @@ class Framework(cmd.Cmd):
         return [x[0] for x in self.query('SELECT name FROM sqlite_master WHERE type=\'table\'') if x[0] not in ['dashboard']]
 
     #==================================================
+    # SIDE-DATABASE METHODS (endpoints + apps)
+    #==================================================
+    # Side-databases live outside the workspace tree so multiple workspaces
+    # share one corpus of endpoints / apps. The schema is created on first
+    # connect (CREATE TABLE IF NOT EXISTS) so collectors don't need a
+    # separate bootstrap step.
+
+    _ENDPOINTS_SCHEMA = (
+        '''CREATE TABLE IF NOT EXISTS endpoints (
+            id                INTEGER PRIMARY KEY,
+            fqdn              TEXT NOT NULL,
+            apex              TEXT NOT NULL,
+            method            TEXT NOT NULL,
+            path_template     TEXT NOT NULL,
+            operation_id      TEXT,
+            discovered_at     TEXT NOT NULL,
+            last_verified_at  TEXT,
+            confidence        TEXT NOT NULL,
+            app_id            INTEGER,
+            UNIQUE (fqdn, method, path_template)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_endpoints_apex ON endpoints(apex)',
+        'CREATE INDEX IF NOT EXISTS idx_endpoints_apex_method ON endpoints(apex, method)',
+        '''CREATE TABLE IF NOT EXISTS endpoint_observations (
+            id                  INTEGER PRIMARY KEY,
+            endpoint_id         INTEGER NOT NULL REFERENCES endpoints(id),
+            source              TEXT NOT NULL,
+            source_ref          TEXT,
+            observed_at         TEXT NOT NULL,
+            raw_url             TEXT,
+            http_status         INTEGER,
+            content_type        TEXT,
+            response_body_hash  TEXT,
+            evidence_blob       TEXT,
+            UNIQUE (endpoint_id, source, source_ref)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_obs_endpoint ON endpoint_observations(endpoint_id)',
+        'CREATE INDEX IF NOT EXISTS idx_obs_source ON endpoint_observations(source)',
+        '''CREATE TABLE IF NOT EXISTS endpoint_params (
+            id            INTEGER PRIMARY KEY,
+            endpoint_id   INTEGER NOT NULL REFERENCES endpoints(id),
+            location      TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            type_hint     TEXT,
+            sample_values TEXT,
+            required      INTEGER,
+            source        TEXT NOT NULL,
+            UNIQUE (endpoint_id, location, name, source)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_params_endpoint ON endpoint_params(endpoint_id)',
+        '''CREATE TABLE IF NOT EXISTS endpoint_tags (
+            endpoint_id INTEGER NOT NULL REFERENCES endpoints(id),
+            tag         TEXT NOT NULL,
+            source      TEXT,
+            PRIMARY KEY (endpoint_id, tag)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_tags_tag ON endpoint_tags(tag)',
+    )
+
+    _APPS_SCHEMA = (
+        '''CREATE TABLE IF NOT EXISTS apps (
+            id                INTEGER PRIMARY KEY,
+            fqdn              TEXT NOT NULL,
+            apex              TEXT NOT NULL,
+            path_prefix       TEXT NOT NULL DEFAULT '/',
+            app_class         TEXT NOT NULL,
+            confidence        TEXT NOT NULL,
+            discovered_at     TEXT NOT NULL,
+            last_verified_at  TEXT NOT NULL,
+            UNIQUE (fqdn, path_prefix, app_class)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_apps_apex ON apps(apex)',
+        'CREATE INDEX IF NOT EXISTS idx_apps_class ON apps(app_class)',
+        '''CREATE TABLE IF NOT EXISTS app_facts (
+            app_id      INTEGER NOT NULL REFERENCES apps(id),
+            fact_class  TEXT NOT NULL,
+            fact_key    TEXT NOT NULL,
+            fact_value  TEXT,
+            source      TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (app_id, fact_class, fact_key)
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_facts_class_value ON app_facts(fact_class, fact_value)',
+    )
+
+    def endpoints_db_path(self):
+        return os.path.expanduser(self._global_options['endpoints_db_path'])
+
+    def apps_db_path(self):
+        return os.path.expanduser(self._global_options['apps_db_path'])
+
+    def endpoints_conn(self):
+        '''Return a sqlite3.Connection to the endpoints side-DB, creating
+        the file + schema on first call. Caller closes.'''
+        return self._open_side_db(self.endpoints_db_path(), Framework._ENDPOINTS_SCHEMA)
+
+    def apps_conn(self):
+        '''Return a sqlite3.Connection to the apps side-DB, creating the
+        file + schema on first call. Caller closes.'''
+        return self._open_side_db(self.apps_db_path(), Framework._APPS_SCHEMA)
+
+    def _open_side_db(self, path, schema):
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.execute('PRAGMA foreign_keys = ON')
+        conn.execute('PRAGMA journal_mode = WAL')
+        for stmt in schema:
+            conn.execute(stmt)
+        conn.commit()
+        return conn
+
+    #==================================================
     # INSERT METHODS
     #==================================================
 
@@ -881,6 +995,61 @@ class Framework(cmd.Cmd):
         # and added as a subcommand for the show command.
         prefix = 'show_'
         return [x[len(prefix):] for x in self.get_names() if x.startswith(prefix)]
+
+    def show_endpoints(self):
+        '''Shows endpoints from the side-database, scoped to seeded apexes.'''
+        self._show_side_db(
+            self.endpoints_db_path(), 'endpoints',
+            ['fqdn', 'method', 'path_template', 'confidence'],
+        )
+
+    def show_apps(self):
+        '''Shows apps from the side-database, scoped to seeded apexes.'''
+        self._show_side_db(
+            self.apps_db_path(), 'apps',
+            ['fqdn', 'app_class', 'confidence', 'last_verified_at'],
+        )
+
+    def _show_side_db(self, path, table, columns, limit=200):
+        if not os.path.exists(path):
+            self.output(f'No side-database at {path} — run a collector first.')
+            return
+        # Scope to apexes seeded in the current workspace's domains table.
+        # If nothing is seeded, show everything (helpful for first-run inspection).
+        apexes = []
+        try:
+            apexes = [r[0] for r in self.query('SELECT DISTINCT domain FROM domains') if r[0]]
+        except sqlite3.OperationalError:
+            pass
+        if apexes:
+            ph = ','.join('?' * len(apexes))
+            sql = (
+                f"SELECT {', '.join(columns)} FROM {table} "
+                f"WHERE apex IN ({ph}) "
+                f"ORDER BY fqdn LIMIT {int(limit)}"
+            )
+            values = tuple(apexes)
+        else:
+            sql = (
+                f"SELECT {', '.join(columns)} FROM {table} "
+                f"ORDER BY fqdn LIMIT {int(limit)}"
+            )
+            values = ()
+        try:
+            results = self._query(path, sql, values, include_header=True)
+        except sqlite3.OperationalError as e:
+            self.error(f"Side-DB query failed (table {table!r} may not exist yet): {e}")
+            return
+        if isinstance(results, list) and results:
+            header = results.pop(0)
+            if results:
+                self.table(results, header=header)
+                scope = f' for {len(apexes)} apex(es)' if apexes else ''
+                self.output(f"{len(results)} rows{scope} (cap {limit}).")
+            else:
+                self.output('No data in scope.')
+        else:
+            self.output('No data.')
 
     #==================================================
     # COMMAND METHODS

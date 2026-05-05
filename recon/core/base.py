@@ -92,6 +92,18 @@ class Recon(framework.Framework):
         self.register_option('timeout', 10, True, 'socket timeout (seconds)')
         self.register_option('user-agent', f"recon-og/v{__version__.split('.')[0]}", True, 'user-agent string')
         self.register_option('verbosity', 1, True, 'verbosity level (0 = minimal, 1 = verbose, 2 = debug)')
+        # Side-databases shared across workspaces. Created lazily by the first
+        # module that calls self.endpoints_conn() / self.apps_conn(). The
+        # collectors / fingerprinters that write here live in the marketplace,
+        # not in base — base only exposes the connection + schema bootstrap.
+        self.register_option('endpoints_db_path',
+                             '~/bug_bounty/tools/recon/endpoints.db', False,
+                             'path to the endpoints side-database '
+                             '(callable HTTP / GraphQL surfaces)')
+        self.register_option('apps_db_path',
+                             '~/bug_bounty/tools/recon/apps.db', False,
+                             'path to the apps side-database '
+                             '(software fingerprints + facts)')
 
     def _init_home(self):
         # initialize home folder
