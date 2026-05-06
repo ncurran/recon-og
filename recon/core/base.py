@@ -90,8 +90,23 @@ class Recon(framework.Framework):
         self.register_option('proxy', None, False, 'proxy server (address:port)')
         self.register_option('threads', 10, True, 'number of threads (where applicable)')
         self.register_option('timeout', 10, True, 'socket timeout (seconds)')
-        self.register_option('user-agent', f"recon-og/v{__version__.split('.')[0]}", True, 'user-agent string')
+        self.register_option('user-agent',
+                             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                             '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                             True, 'user-agent string')
         self.register_option('verbosity', 1, True, 'verbosity level (0 = minimal, 1 = verbose, 2 = debug)')
+        # Bug bounty attribution: the platform-mandated header that identifies our
+        # traffic to programs we test. Default value is the bare username (works
+        # for most programs since 'ncurran' is unique across HackerOne / Bugcrowd /
+        # Intigriti / YesWeHack / Federacy). Programs that require a platform
+        # prefix (or a different header name, e.g. Fiserv's X-HackerOne-Research)
+        # override per-workspace via `options set`. Empty value disables the
+        # header entirely (use for non-bug-bounty workspaces).
+        self.register_option('bug_bounty_attribution_header', 'X-Bug-Bounty', False,
+                             'attribution header NAME injected on every self.request() call '
+                             '(e.g. X-Bug-Bounty, X-HackerOne-Research)')
+        self.register_option('bug_bounty_attribution_value', 'ncurran', False,
+                             'attribution header VALUE; empty disables the header entirely')
         # Side-databases shared across workspaces. Created lazily by the first
         # module that calls self.endpoints_conn() / self.apps_conn(). The
         # collectors / fingerprinters that write here live in the marketplace,

@@ -870,6 +870,13 @@ class Framework(cmd.Cmd):
         # set the User-Agent header
         if 'user-agent' not in [h.lower() for h in headers]:
             headers['user-agent'] = self._global_options['user-agent']
+        # bug bounty attribution: every request to a program target must carry
+        # the operator's identifying header. Skipped when the value is empty
+        # (non-bug-bounty workspaces) or when the caller has already set it.
+        attr_name = self._global_options.get('bug_bounty_attribution_header') or ''
+        attr_value = self._global_options.get('bug_bounty_attribution_value') or ''
+        if attr_name and attr_value and attr_name.lower() not in [h.lower() for h in headers]:
+            headers[attr_name] = attr_value
         # normalize capitalization of the User-Agent header
         headers = {k.title(): v for k, v in headers.items()}
         kwargs['headers'] = headers

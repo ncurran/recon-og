@@ -922,5 +922,121 @@ class TestSideDatabases(unittest.TestCase):
             self.assertIn(f'CREATE TABLE IF NOT EXISTS {table}', ddl_blob)
 
 
+class TestBugBountyAttribution(unittest.TestCase):
+    """Every HTTP request issued via self.request() must carry a bug-bounty
+    attribution header (~/bug_bounty/hunting_and_reporting_guidelines.md).
+    The framework injects it from two global options. Two layers of test:
+    a subprocess `options list` check that the options exist with sensible
+    defaults, and a direct unit test on Framework.request() with the
+    requests module mocked, so we can assert the wire-level headers."""
+
+    # ── option registration (subprocess) ─────────────────────────────────────
+
+    def test_attribution_header_option_registered_with_default(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('BUG_BOUNTY_ATTRIBUTION_HEADER', r.stdout)
+            self.assertIn('X-Bug-Bounty', r.stdout)
+
+    def test_attribution_value_option_registered_with_default(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('BUG_BOUNTY_ATTRIBUTION_VALUE', r.stdout)
+            self.assertIn('ncurran', r.stdout)
+
+    def test_user_agent_default_is_real_chrome(self):
+        # python-requests-default UA gets challenged by Cloudflare basic-bot
+        # and broken SPA detection on probed hosts. Default must be a real
+        # browser string.
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('Mozilla/5.0', r.stdout)
+            self.assertIn('Chrome/', r.stdout)
+            self.assertNotIn('recon-og/v', r.stdout)
+
+    # ── request() injection (direct unit test) ───────────────────────────────
+
+    def _load_framework(self):
+        """Import recon.core.framework with the repo on sys.path. Returns
+        the Framework class plus the requests module so callers can patch
+        its module-level functions."""
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import framework as fw
+            return fw
+        finally:
+            sys.path.pop(0)
+
+    def _make_inst(self, fw, **opts):
+        """Build a minimal Framework instance for direct method calls.
+        We don't go through Recon.__init__ because that initialises the
+        full home tree — overkill for testing one method."""
+        # Framework() takes a params arg; pass empty so it just stores it.
+        inst = fw.Framework('')
+        inst._global_options = {
+            'timeout': 10,
+            'user-agent': 'test-ua/1.0',
+            'proxy': None,
+            'verbosity': 0,
+            'bug_bounty_attribution_header': 'X-Bug-Bounty',
+            'bug_bounty_attribution_value': 'ncurran',
+        }
+        inst._global_options.update(opts)
+        return inst
+
+    def test_request_injects_default_attribution_header(self):
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw)
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = MagicMock(status_code=200, request=MagicMock())
+            inst.request('GET', 'http://example.invalid/')
+            kwargs = mr.get.call_args.kwargs
+            sent = {k.lower(): v for k, v in kwargs['headers'].items()}
+            self.assertEqual(sent.get('x-bug-bounty'), 'ncurran')
+
+    def test_request_skips_attribution_when_value_empty(self):
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw, bug_bounty_attribution_value='')
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = MagicMock(status_code=200, request=MagicMock())
+            inst.request('GET', 'http://example.invalid/')
+            sent = {k.lower(): v for k, v in mr.get.call_args.kwargs['headers'].items()}
+            self.assertNotIn('x-bug-bounty', sent)
+
+    def test_request_honors_custom_header_name(self):
+        # Fiserv (HackerOne): X-HackerOne-Research instead of X-Bug-Bounty.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(
+            fw,
+            bug_bounty_attribution_header='X-HackerOne-Research',
+            bug_bounty_attribution_value='ncurran',
+        )
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = MagicMock(status_code=200, request=MagicMock())
+            inst.request('GET', 'http://example.invalid/')
+            sent = {k.lower(): v for k, v in mr.get.call_args.kwargs['headers'].items()}
+            self.assertEqual(sent.get('x-hackerone-research'), 'ncurran')
+            self.assertNotIn('x-bug-bounty', sent)
+
+    def test_request_does_not_overwrite_caller_supplied_header(self):
+        # If a module sets the header explicitly (rare but legal), we don't
+        # double-stamp.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw)
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = MagicMock(status_code=200, request=MagicMock())
+            inst.request('GET', 'http://example.invalid/',
+                         headers={'X-Bug-Bounty': 'ManualOverride'})
+            sent = {k.lower(): v for k, v in mr.get.call_args.kwargs['headers'].items()}
+            self.assertEqual(sent.get('x-bug-bounty'), 'ManualOverride')
+
+
 if __name__ == '__main__':
     unittest.main()
