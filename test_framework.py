@@ -1166,6 +1166,39 @@ class TestRequestWallClockCap(unittest.TestCase):
         # truncation fires; for a fast response, we should not have set it.
         self.assertNotIn('truncated', vars(r))
 
+    def test_request_cap_works_through_options_keytransform(self):
+        # Regression for the live-arlo bug (2026-05-07): Options.__keytransform__
+        # uppercases keys for subscript lookup, but .get() inherited from dict
+        # bypasses that. The first cut of this fix used .get('max_request_seconds')
+        # which returned None for the registered key (actual stored as
+        # MAX_REQUEST_SECONDS), silently disabling the cap. This test sets up the
+        # real Options instance so the keytransform path is exercised end-to-end.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = fw.Framework('')
+        # Real Options instance, populated via subscript (which uppercases).
+        opts = fw.Options()
+        opts['timeout'] = 10
+        opts['user-agent'] = 'test-ua/1.0'
+        opts['proxy'] = None
+        opts['verbosity'] = 0
+        opts['bug_bounty_attribution_header'] = ''
+        opts['bug_bounty_attribution_value'] = ''
+        opts['max_request_seconds'] = 1
+        opts['max_response_bytes'] = 16 * 1024 * 1024
+        inst._global_options = opts
+
+        # Slow response that would never complete without the cap.
+        slow = self._slow_trickle_response(fw, total_chunks=120, sleep_per_chunk=0.05)
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = slow
+            resp = inst.request('GET', 'http://example.invalid/')
+        # If the cap engaged, body is bounded and `truncated` is set.
+        self.assertTrue(getattr(resp, 'truncated', None),
+                        msg='cap silently disabled — Options keytransform '
+                            'mismatch likely returned')
+        self.assertIn('max_request_seconds', resp.truncated)
+
     def test_request_releases_connection_even_on_truncation(self):
         # The CLOSE_WAIT pile-up symptom from the live CrowdStrike run
         # came from response objects holding their connections open

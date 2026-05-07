@@ -898,8 +898,19 @@ class Framework(cmd.Cmd):
         # monotonic-clock deadline AND a byte cap. If the caller asked
         # for stream=True themselves, defer to them — they're consuming
         # the body manually and don't want us reading it eagerly.
-        max_seconds = int(self._global_options.get('max_request_seconds') or 0)
-        max_bytes = int(self._global_options.get('max_response_bytes') or 0)
+        # NOTE: subscript access goes through Options.__keytransform__
+        # (which uppercases the key); .get() bypasses that and silently
+        # returns None for registered options. Bug found live during the
+        # 2026-05-07 Arlo cdx_wayback hang — the cap was effectively
+        # disabled because of the keytransform mismatch.
+        try:
+            max_seconds = int(self._global_options['max_request_seconds'] or 0)
+        except (KeyError, ValueError):
+            max_seconds = 0
+        try:
+            max_bytes = int(self._global_options['max_response_bytes'] or 0)
+        except (KeyError, ValueError):
+            max_bytes = 0
         caller_stream = bool(kwargs.pop('stream', False))
         if caller_stream or (max_seconds == 0 and max_bytes == 0):
             # Pure pass-through: caller wants streaming, or both caps disabled.
