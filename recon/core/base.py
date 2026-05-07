@@ -90,6 +90,18 @@ class Recon(framework.Framework):
         self.register_option('proxy', None, False, 'proxy server (address:port)')
         self.register_option('threads', 10, True, 'number of threads (where applicable)')
         self.register_option('timeout', 10, True, 'socket timeout (seconds)')
+        # Wall-clock cap on the entire request lifecycle. Plain `timeout=`
+        # is a per-byte read deadline ("no bytes received for N seconds");
+        # a remote dripping bytes at sub-timeout rate can keep a request
+        # alive indefinitely. This caps total request duration regardless
+        # of byte trickle. Live-confirmed during the 2026-05-07 CrowdStrike
+        # sweep where oidc_discover hung ~50 min on one host.
+        self.register_option('max_request_seconds', 30, True,
+                             'hard wall-clock deadline for any one '
+                             'self.request() call; 0 disables')
+        self.register_option('max_response_bytes', 16777216, True,
+                             'cap on response body bytes consumed via '
+                             'self.request(); 0 disables')
         self.register_option('user-agent',
                              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
                              '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',

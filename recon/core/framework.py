@@ -891,8 +891,50 @@ class Framework(cmd.Cmd):
         # disable TLS validation and warning
         kwargs['verify'] = False
         requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
-        # send the request
-        resp = getattr(requests, method.lower())(url, **kwargs)
+
+        # Wall-clock + body-size caps. requests' `timeout=` is per-byte;
+        # a server dripping bytes slowly defeats it indefinitely. Force
+        # stream=True internally so we control body consumption with a
+        # monotonic-clock deadline AND a byte cap. If the caller asked
+        # for stream=True themselves, defer to them — they're consuming
+        # the body manually and don't want us reading it eagerly.
+        max_seconds = int(self._global_options.get('max_request_seconds') or 0)
+        max_bytes = int(self._global_options.get('max_response_bytes') or 0)
+        caller_stream = bool(kwargs.pop('stream', False))
+        if caller_stream or (max_seconds == 0 and max_bytes == 0):
+            # Pure pass-through: caller wants streaming, or both caps disabled.
+            kwargs['stream'] = caller_stream
+            resp = getattr(requests, method.lower())(url, **kwargs)
+        else:
+            # Stream + manual deadline-bounded read.
+            kwargs['stream'] = True
+            resp = getattr(requests, method.lower())(url, **kwargs)
+            import time as _time
+            deadline = _time.monotonic() + max_seconds if max_seconds > 0 else None
+            buf = bytearray()
+            truncated_reason = None
+            try:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        buf.extend(chunk)
+                    if max_bytes > 0 and len(buf) >= max_bytes:
+                        truncated_reason = f'max_response_bytes={max_bytes}'
+                        break
+                    if deadline is not None and _time.monotonic() > deadline:
+                        truncated_reason = f'max_request_seconds={max_seconds}'
+                        break
+            finally:
+                # Always release the underlying connection — without this,
+                # CLOSE_WAIT sockets pile up when the iter_content loop
+                # short-circuits early.
+                resp.close()
+            # Populate the response object so callers can use .content / .text
+            # / .json() exactly as if the request had been non-streaming.
+            resp._content = bytes(buf)
+            resp._content_consumed = True
+            if truncated_reason:
+                resp.truncated = truncated_reason
+
         if self._global_options['verbosity'] < 2:
             return resp
         # display request data

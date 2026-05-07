@@ -1038,5 +1038,149 @@ class TestBugBountyAttribution(unittest.TestCase):
             self.assertEqual(sent.get('x-bug-bounty'), 'ManualOverride')
 
 
+class TestRequestWallClockCap(unittest.TestCase):
+    """Framework.request() must enforce a hard wall-clock + body-size cap so
+    a remote that drips bytes at sub-`timeout=` rate (or sends a multi-GiB
+    response) can't hang the caller indefinitely. Live-confirmed during
+    the 2026-05-07 CrowdStrike sweep where oidc_discover hung ~50 min on
+    a single slow host."""
+
+    def _load_framework(self):
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import framework as fw
+            return fw
+        finally:
+            sys.path.pop(0)
+
+    def _make_inst(self, fw, **opts):
+        inst = fw.Framework('')
+        inst._global_options = {
+            'timeout': 10,
+            'user-agent': 'test-ua/1.0',
+            'proxy': None,
+            'verbosity': 0,
+            'bug_bounty_attribution_header': '',
+            'bug_bounty_attribution_value': '',
+            'max_request_seconds': 30,
+            'max_response_bytes': 16 * 1024 * 1024,
+        }
+        inst._global_options.update(opts)
+        return inst
+
+    def _slow_trickle_response(self, fw, total_chunks=10, sleep_per_chunk=0.05):
+        """A response that yields bytes slowly via iter_content, simulating a
+        server dripping bytes at sub-`timeout=` rate."""
+        from unittest.mock import MagicMock
+        import time
+        resp = MagicMock(status_code=200, request=MagicMock(), headers={})
+        def _iter_content(chunk_size=None):
+            for i in range(total_chunks):
+                time.sleep(sleep_per_chunk)
+                yield b'x' * 10
+        resp.iter_content = _iter_content
+        resp.close = MagicMock()
+        return resp
+
+    # ── option registration ─────────────────────────────────────────────────
+
+    def test_max_request_seconds_option_registered(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('MAX_REQUEST_SECONDS', r.stdout)
+            self.assertIn('30', r.stdout)
+
+    def test_max_response_bytes_option_registered(self):
+        with _IsolatedHome() as h:
+            r = h.run_rc('options list')
+            self.assertEqual(r.returncode, 0, msg=r.stderr)
+            self.assertIn('MAX_RESPONSE_BYTES', r.stdout)
+            # Default = 16 MiB = 16777216
+            self.assertIn('16777216', r.stdout)
+
+    # ── deadline behaviour ──────────────────────────────────────────────────
+
+    def test_request_truncates_at_max_request_seconds(self):
+        from unittest.mock import patch
+        fw = self._load_framework()
+        inst = self._make_inst(fw, max_request_seconds=1)  # 1-second cap
+        # Trickle 60 chunks at 0.05s each = 3s total — exceeds 1s deadline.
+        slow = self._slow_trickle_response(fw, total_chunks=60, sleep_per_chunk=0.05)
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = slow
+            resp = inst.request('GET', 'http://example.invalid/')
+        # Body got truncated at the 1s deadline. Should have far fewer than
+        # 60 chunks worth of data (60 * 10 = 600 bytes).
+        self.assertLess(len(resp._content), 600)
+        self.assertTrue(getattr(resp, 'truncated', None))
+        self.assertIn('max_request_seconds=1', resp.truncated)
+        slow.close.assert_called()  # connection always released
+
+    def test_request_truncates_at_max_response_bytes(self):
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw, max_response_bytes=100)  # 100-byte cap
+        # 1000 chunks of 10 bytes each = 10 KiB — exceeds 100-byte cap.
+        resp = MagicMock(status_code=200, request=MagicMock(), headers={})
+        resp.iter_content = lambda chunk_size=None: iter([b'x' * 10] * 1000)
+        resp.close = MagicMock()
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = resp
+            r = inst.request('GET', 'http://example.invalid/')
+        self.assertLessEqual(len(r._content), 200)  # capped near 100
+        self.assertTrue(getattr(r, 'truncated', None))
+        self.assertIn('max_response_bytes=100', r.truncated)
+
+    def test_request_passes_through_when_caller_streams(self):
+        # A module that wants to stream manually (e.g. for very-large
+        # downloads) should be able to opt out of our deadline-bounded
+        # body read by passing stream=True.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw, max_request_seconds=1)
+        passthrough = MagicMock(status_code=200, request=MagicMock())
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = passthrough
+            inst.request('GET', 'http://example.invalid/', stream=True)
+            # Confirm we passed stream=True through to requests.
+            self.assertEqual(mr.get.call_args.kwargs.get('stream'), True)
+
+    def test_request_completes_normally_for_fast_responses(self):
+        # The deadline-bounded read shouldn't change behaviour for
+        # responses that complete quickly.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw)
+        body = b'<html>fast response</html>'
+        resp = MagicMock(status_code=200, request=MagicMock(), headers={})
+        resp.iter_content = lambda chunk_size=None: iter([body])
+        resp.close = MagicMock()
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = resp
+            r = inst.request('GET', 'http://example.invalid/')
+        self.assertEqual(r._content, body)
+        self.assertEqual(r._content_consumed, True)
+        # MagicMock auto-creates attributes on access, so hasattr is unreliable.
+        # Check directly: my code only sets `truncated` to a string when
+        # truncation fires; for a fast response, we should not have set it.
+        self.assertNotIn('truncated', vars(r))
+
+    def test_request_releases_connection_even_on_truncation(self):
+        # The CLOSE_WAIT pile-up symptom from the live CrowdStrike run
+        # came from response objects holding their connections open
+        # after a hung body-read. resp.close() must always fire.
+        from unittest.mock import patch, MagicMock
+        fw = self._load_framework()
+        inst = self._make_inst(fw, max_response_bytes=10)
+        resp = MagicMock(status_code=200, request=MagicMock(), headers={})
+        resp.iter_content = lambda chunk_size=None: iter([b'x' * 1000])
+        resp.close = MagicMock()
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = resp
+            inst.request('GET', 'http://example.invalid/')
+        resp.close.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()
