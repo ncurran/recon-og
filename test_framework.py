@@ -1024,6 +1024,46 @@ class TestBugBountyAttribution(unittest.TestCase):
             self.assertEqual(sent.get('x-hackerone-research'), 'ncurran')
             self.assertNotIn('x-bug-bounty', sent)
 
+    def test_request_attribution_works_through_options_keytransform(self):
+        # Regression for the second instance of the keytransform bug
+        # (c5b2cf1 caught the first instance for max_request_seconds; this
+        # one is for the X-Bug-Bounty header injection). Options inherits
+        # from dict but overrides __getitem__ via __keytransform__ that
+        # uppercases the key. The original .get('bug_bounty_attribution_*')
+        # bypassed keytransform → returned None for the registered keys
+        # → empty string → header never injected. Means every active probe
+        # across every sweep since 800fde4 silently went out without the
+        # bug-bounty attribution header.
+        from unittest.mock import patch, MagicMock
+        sys.path.insert(0, _REPO)
+        try:
+            from recon.core import framework as fw
+        finally:
+            sys.path.pop(0)
+        inst = fw.Framework('')
+        # Real Options instance — populated via subscript so the keys are
+        # stored under their __keytransform__-uppercased names.
+        opts = fw.Options()
+        opts['timeout'] = 10
+        opts['user-agent'] = 'test-ua/1.0'
+        opts['proxy'] = None
+        opts['verbosity'] = 0
+        opts['bug_bounty_attribution_header'] = 'X-Bug-Bounty'
+        opts['bug_bounty_attribution_value'] = 'ncurran'
+        opts['max_request_seconds'] = 0  # disable cap so streaming logic is bypassed
+        opts['max_response_bytes'] = 0
+        inst._global_options = opts
+
+        with patch.object(fw, 'requests') as mr:
+            mr.get.return_value = MagicMock(
+                status_code=200, request=MagicMock(),
+            )
+            inst.request('GET', 'http://example.invalid/')
+            sent = {k.lower(): v for k, v in mr.get.call_args.kwargs['headers'].items()}
+        self.assertEqual(sent.get('x-bug-bounty'), 'ncurran',
+                         msg='attribution header silently disabled by '
+                             'Options keytransform mismatch')
+
     def test_request_does_not_overwrite_caller_supplied_header(self):
         # If a module sets the header explicitly (rare but legal), we don't
         # double-stamp.

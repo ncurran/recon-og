@@ -873,8 +873,19 @@ class Framework(cmd.Cmd):
         # bug bounty attribution: every request to a program target must carry
         # the operator's identifying header. Skipped when the value is empty
         # (non-bug-bounty workspaces) or when the caller has already set it.
-        attr_name = self._global_options.get('bug_bounty_attribution_header') or ''
-        attr_value = self._global_options.get('bug_bounty_attribution_value') or ''
+        # NOTE: subscript access goes through Options.__keytransform__ (which
+        # uppercases the key). .get() bypasses keytransform — same bug as
+        # MAX_REQUEST_SECONDS had until c5b2cf1. Found 2026-05-07 while
+        # running a broader audit: this code was silently NOT injecting the
+        # header through every probe across every sweep since commit 800fde4.
+        try:
+            attr_name = self._global_options['bug_bounty_attribution_header'] or ''
+        except KeyError:
+            attr_name = ''
+        try:
+            attr_value = self._global_options['bug_bounty_attribution_value'] or ''
+        except KeyError:
+            attr_value = ''
         if attr_name and attr_value and attr_name.lower() not in [h.lower() for h in headers]:
             headers[attr_name] = attr_value
         # normalize capitalization of the User-Agent header
